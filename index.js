@@ -21,19 +21,14 @@ function HandshakeStream (protocol, payload, shake) {
   w._write = function (chunk, enc, next) {
     if (state === 'error') return
     if (chunk.length === 0) return next()
-
-    if (state === 'ready') {
-      // once the handshake is accepted, start forwarding incoming data to
-      // the inner protocol stream
-      var ok = protocol.write(chunk)
-      if (!ok) protocol.once('drain', next) // respect backpressure from protocol
-      else next()
-    } else if (state === 'accepted') {
+    debug(id, 'chunk', chunk.toString(), chunk.readUInt8(0))
+    if (state === 'accepted') {
       // we've accepted the stream, but are waiting for the other side to accept
       // as well. they should send a byte with all 1s set
       debug(id, 'receiving ACCEPT byte from other side; now both sides have ACCEPTed')
       if (chunk.readUInt8(0) !== 127) {
         state = 'error'
+        debug(id, 'Error', chunk.readUInt8(0))
         return next(new Error('unexpected non-ready-signal byte received'))
       }
       debug(id, 'both sides ACCEPTed')
@@ -139,17 +134,22 @@ function HandshakeStream (protocol, payload, shake) {
   res.setWritable(w)
 
   function upgrade (accum) {
-    debug('upgrading stream to inner protocol')
-    state = 'ready'
-    // upgrade the stream to the inner protocol
-    protocol.on('data', function (data) {
-      res.push(data)
-    })
-    protocol.on('finish', function () {
-      res.end()
-    })
+    debug(id, 'upgrading stream to inner protocol, accum:', accum.length)
+    state = 'should_not_be_read'
+
+    // If there is anything in our internal read stream, write it
+    const buf = r.read()
+    if (buf) {
+      debug(id, 'from r buffer', buf.readUInt8(0))
+      res.push(buf)
+    }
+
+    res.setReadable(protocol)
+    res.setWritable(protocol)
+    // kick start the protocol stream
+    res.read(0)
+    // write anything we've accummulated
     res.write(accum)
-    protocol.resume()
   }
 
   return res
